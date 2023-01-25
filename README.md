@@ -55,10 +55,10 @@ The applications and source code are organized as described in the following lis
 
 The application is built using the provided Makefile, for example from an Ubuntu Linux host (Windows Subsystem for Linux is supported). You simply need to install the VisionPack and OpenCV ARM64 libraries and type make.
 
-*Note: currently the opencv-highgui module used to display results cannot be installed as a multi-arch package so the application must be built with ENABLE_DISPLAY=0.  Building with Yocto has no such limitation.*
+*Note: currently the opencv-highgui module used to display results cannot be installed as a multi-arch package so the build will fail.  Building with Yocto has no such limitation.*
 
 ```shell
-make ENABLE_DISPLAY=0
+make CC=aarch64-linux-gnu-gcc CXX=aarch64-linux-gnu-g++
 ```
 
 If using a Yocto build environment, ensure meta-deepview is integrated into your toolchain and target.  Then simply source the Yocto environment and type make.

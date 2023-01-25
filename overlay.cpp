@@ -19,6 +19,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+#include <opencv2/core.hpp>
+#include <opencv2/highgui.hpp>
+#include <opencv2/imgcodecs.hpp>
+#include <opencv2/imgproc.hpp>
+
 #include <videostream.h>
 
 #include "json.hpp"
@@ -26,24 +31,99 @@
 
 using nlohmann::json;
 
-int main(int argc, char **argv) {
+int
+main(int argc, char** argv)
+{
+    const char* vslpath = "/tmp/camera.vsl";
+
+    cv::namedWindow("overlay", cv::WINDOW_NORMAL);
+
+    /**
+     * This application will receive detection events using a ZeroMQ pub/sub
+     * socket where the detection application publishes the results and this
+     * overlay application subscribes to the results.
+     */
     zmq::context_t ctx;
     zmq::socket_t  sub(ctx, zmq::socket_type::sub);
-
     sub.set(zmq::sockopt::subscribe, "");
     sub.connect("ipc:///tmp/detect.pub");
 
-    for (;;) {
-        zmq::message_t msg;
+    /**
+     * We will receive the camera frames using VideoStream Library then map and
+     * convert them to an OpenCV matrix onto which we will draw the bounding
+     * boxes and display the results on-screen.
+     *
+     * NOTE: Currently the demo is setup to receive the YUYV frames and handle
+     * conversion using OpenCV.  This is not well-optimized, a future version
+     * of VSL will provide optimized image conversion functions.
+     */
+    auto vsl = vsl_client_init(vslpath, NULL, false);
+    if (!vsl) {
+        fprintf(stderr,
+                "failed to connect videostream socket %s: %s\n",
+                vslpath,
+                strerror(errno));
+        return EXIT_FAILURE;
+    }
 
-        auto res = sub.recv(msg, zmq::recv_flags::none);
-        if (!res) { fprintf(stderr, "received empty message\n");
+    for (;;) {
+        /**
+         * To keep the sample simple we sequentially request the next frame and
+         * then the results, which will likely be out of sync but near enough
+         * for the visual overlays to be correct.
+         */
+        auto frame = vsl_frame_wait(vsl, 0);
+        if (!frame) {
+            fprintf(stderr, "failed to acquire frame: %s\n", strerror(errno));
+            return EXIT_FAILURE;
+        }
+
+        auto err = vsl_frame_trylock(frame);
+        if (err) {
+            fprintf(stderr, "failed to lock frame: %s\n", strerror(errno));
+            vsl_frame_release(frame);
+            return EXIT_FAILURE;
+        }
+
+        auto width  = vsl_frame_width(frame);
+        auto height = vsl_frame_height(frame);
+        auto fourcc = vsl_frame_fourcc(frame);
+
+        printf("frame %dx%d %c%c%c%c\n",
+               width,
+               height,
+               fourcc,
+               fourcc >> 8,
+               fourcc >> 16,
+               fourcc >> 24);
+
+        auto    pix = vsl_frame_mmap(frame, NULL);
+        cv::Mat yuv(height, width, CV_8UC2, pix);
+        cv::Mat rgb(height, width, CV_8UC3);
+        cv::cvtColor(yuv, rgb, cv::COLOR_YUV2BGR_YUY2);
+
+        vsl_frame_unlock(frame);
+        vsl_frame_release(frame);
+
+        /**
+         * Read the current message from the detection application.  Depending
+         * on processing time to get our cv::mat this is likely to be out of
+         * sync with our image but within a couple frames and visually correct
+         * as long as the objects are not moving too fast.
+         */
+        zmq::message_t msg;
+        auto           res = sub.recv(msg, zmq::recv_flags::none);
+        if (!res) {
+            fprintf(stderr, "received empty message\n");
             continue;
         }
 
         auto detect = json::parse(msg.to_string());
         printf("DETECTIONS: %s\n", detect.dump(4).c_str());
+
+        cv::imshow("overlay", rgb);
+        // cv::imwrite("/tmp/overlay.jpg", rgb);
     }
 
     return EXIT_SUCCESS;
-    }
+}
