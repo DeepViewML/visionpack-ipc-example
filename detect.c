@@ -44,6 +44,7 @@ struct json {
 static int         running = 1;
 static VSLClient*  vsl     = NULL;
 static struct json json    = {0};
+static const char* topic   = "DETECTION";
 
 static int64_t
 clock_now()
@@ -123,11 +124,12 @@ handle_vsl(void* pub, VAALContext* vaal, VAALBox* boxes, int max_boxes)
         return 0;
     }
 
-    int64_t  fps    = update_fps();
-    int      dmabuf = vsl_frame_handle(frame);
-    int      width  = vsl_frame_width(frame);
-    int      height = vsl_frame_height(frame);
-    uint32_t fourcc = vsl_frame_fourcc(frame);
+    int64_t  fps       = update_fps();
+    int      dmabuf    = vsl_frame_handle(frame);
+    int      width     = vsl_frame_width(frame);
+    int      height    = vsl_frame_height(frame);
+    uint32_t fourcc    = vsl_frame_fourcc(frame);
+    int64_t  timestamp = vsl_frame_timestamp(frame);
 
     start = vaal_clock_now();
     err   = vaal_load_frame_dmabuf(vaal,
@@ -188,7 +190,11 @@ handle_vsl(void* pub, VAALContext* vaal, VAALBox* boxes, int max_boxes)
      */
     char* pos = json.buffer;
     pos       = json_objOpen_flex(&json.buffer, &json.capacity, pos, NULL);
-
+    pos       = json_int64_flex(&json.buffer,
+                          &json.capacity,
+                          pos,
+                          "timestamp",
+                          timestamp);
     pos =
         json_int64_flex(&json.buffer, &json.capacity, pos, "load_ns", load_ns);
     pos = json_int64_flex(&json.buffer,
@@ -210,6 +216,7 @@ handle_vsl(void* pub, VAALContext* vaal, VAALBox* boxes, int max_boxes)
         const char*    label = vaal_label(vaal, box->label);
 
         pos = json_objOpen_flex(&json.buffer, &json.capacity, pos, NULL);
+        pos = json_objOpen_flex(&json.buffer, &json.capacity, pos, "bbox");
         pos = json_double_flex(&json.buffer,
                                &json.capacity,
                                pos,
@@ -230,6 +237,8 @@ handle_vsl(void* pub, VAALContext* vaal, VAALBox* boxes, int max_boxes)
                                pos,
                                "ymax",
                                box->ymax);
+        pos = json_objClose_flex(&json.buffer, &json.capacity, pos);
+
         pos = json_double_flex(&json.buffer,
                                &json.capacity,
                                pos,
@@ -255,9 +264,14 @@ handle_vsl(void* pub, VAALContext* vaal, VAALBox* boxes, int max_boxes)
 
     fprintf(stderr, "%.*s\n", json.length, json.buffer);
 
+    err = zmq_send(pub, topic, strlen(topic), ZMQ_SNDMORE);
+    if (err == -1) {
+        fprintf(stderr, "failed to publish topic: %s\n", zmq_strerror(errno));
+    }
+
     err = zmq_send(pub, json.buffer, json.length, 0);
     if (err == -1) {
-        fprintf(stderr, "failed to publish event: %s\n", zmq_strerror(errno));
+        fprintf(stderr, "failed to publish result: %s\n", zmq_strerror(errno));
     }
 
     vsl_frame_unlock(frame);
@@ -286,12 +300,13 @@ main(int argc, char** argv)
         {"engine", required_argument, NULL, 'e'},
         {"vsl", required_argument, NULL, 's'},
         {"pub", required_argument, NULL, 'p'},
+        {"topic", required_argument, NULL, 't'},
         {"max-boxes", required_argument, NULL, 'm'},
         {NULL},
     };
 
     for (;;) {
-        int opt = getopt_long(argc, argv, "hve:m:s:p:", options, NULL);
+        int opt = getopt_long(argc, argv, "hve:m:s:p:t:", options, NULL);
         if (opt == -1) break;
 
         switch (opt) {
@@ -308,10 +323,13 @@ main(int argc, char** argv)
                    "-s PATH, --vsl PATH\n"
                    "    vsl socket path to capture frames (default: %s)\n"
                    "-p URL, --pub URL\n"
-                   "    url for the result message queue (default: %s)\n",
+                   "    url for the result message queue (default: %s)\n"
+                   "-t TOPIC --topic TOPIC\n"
+                   "    publish events under TOPIC (default: %s)\n",
                    max_boxes,
                    vslpath,
-                   puburl);
+                   puburl,
+                   topic);
             return EXIT_SUCCESS;
         case 'v':
             printf("visionpack ipc example - vaal %s vsl %s\n",
@@ -329,6 +347,9 @@ main(int argc, char** argv)
             break;
         case 'p':
             puburl = optarg;
+            break;
+        case 't':
+            topic = optarg;
             break;
         default:
             fprintf(stderr,
@@ -385,11 +406,11 @@ main(int argc, char** argv)
         return EXIT_FAILURE;
     }
 
-    int conflate = 1;
-    err = zmq_setsockopt(pub, ZMQ_CONFLATE, &conflate, sizeof(conflate));
+    int hwm = 1;
+    err     = zmq_setsockopt(pub, ZMQ_SNDHWM, &hwm, sizeof(hwm));
     if (err) {
         fprintf(stderr,
-                "failed to set zeromq option ZMQ_CONFLATE: %s\n",
+                "failed to set zeromq option ZMQ_SNDHWM: %s\n",
                 zmq_strerror(errno));
         return EXIT_FAILURE;
     }

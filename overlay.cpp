@@ -19,15 +19,20 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+#include <vector>
+
 #include <opencv2/core.hpp>
 #include <opencv2/highgui.hpp>
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/imgproc.hpp>
 
+extern "C" {
 #include <videostream.h>
+}
 
 #include "json.hpp"
 #include "zmq.hpp"
+#include "zmq_addon.hpp"
 
 using nlohmann::json;
 
@@ -36,7 +41,7 @@ main(int argc, char** argv)
 {
     const char* vslpath = "/tmp/camera.vsl";
 
-    cv::namedWindow("overlay", cv::WINDOW_NORMAL);
+    // cv::namedWindow("overlay", cv::WINDOW_NORMAL);
 
     /**
      * This application will receive detection events using a ZeroMQ pub/sub
@@ -45,7 +50,7 @@ main(int argc, char** argv)
      */
     zmq::context_t ctx;
     zmq::socket_t  sub(ctx, zmq::socket_type::sub);
-    sub.set(zmq::sockopt::subscribe, "");
+    sub.set(zmq::sockopt::subscribe, "DETECTION");
     sub.connect("ipc:///tmp/detect.pub");
 
     /**
@@ -111,17 +116,17 @@ main(int argc, char** argv)
          * sync with our image but within a couple frames and visually correct
          * as long as the objects are not moving too fast.
          */
-        zmq::message_t msg;
-        auto           res = sub.recv(msg, zmq::recv_flags::none);
-        if (!res) {
+        std::vector<zmq::message_t> msgs;
+        auto ret = zmq::recv_multipart(sub, std::back_inserter(msgs));
+        if (!ret) {
             fprintf(stderr, "received empty message\n");
             continue;
         }
 
-        auto detect = json::parse(msg.to_string());
-        printf("DETECTIONS: %s\n", detect.dump(4).c_str());
+        auto detect = json::parse(msgs[1].to_string());
+        printf("%s: %s\n", msgs[0].to_string().c_str(), detect.dump(4).c_str());
 
-        cv::imshow("overlay", rgb);
+        // cv::imshow("overlay", rgb);
         // cv::imwrite("/tmp/overlay.jpg", rgb);
     }
 

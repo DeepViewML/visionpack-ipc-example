@@ -3,3 +3,4 @@
 *.swp
 detect
 overlay
+.pytest_cache/
