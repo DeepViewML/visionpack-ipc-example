@@ -36,12 +36,51 @@ extern "C" {
 
 using nlohmann::json;
 
+namespace data
+{
+struct box {
+    float xmin;
+    float xmax;
+    float ymin;
+    float ymax;
+};
+
+struct object {
+    box         bbox;
+    float       score;
+    std::string label;
+};
+
+struct result {
+    int64_t             timestamp;
+    int64_t             boxes_ns;
+    int64_t             load_ns;
+    int64_t             model_ns;
+    int                 fps;
+    std::vector<object> objects;
+};
+
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(box, xmin, xmax, ymin, ymax)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(object, bbox, score, label)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(result,
+                                                timestamp,
+                                                boxes_ns,
+                                                load_ns,
+                                                model_ns,
+                                                fps,
+                                                objects)
+
+} // namespace data
+
 int
 main(int argc, char** argv)
 {
     const char* vslpath = "/tmp/camera.vsl";
 
-    // cv::namedWindow("overlay", cv::WINDOW_NORMAL);
+    cv::namedWindow("overlay", cv::WINDOW_NORMAL);
+    cv::setWindowProperty("overlay",
+                          cv::WindowPropertyFlags::WND_PROP_FULLSCREEN,
+                          1);
 
     /**
      * This application will receive detection events using a ZeroMQ pub/sub
@@ -123,11 +162,22 @@ main(int argc, char** argv)
             continue;
         }
 
-        auto detect = json::parse(msgs[1].to_string());
-        printf("%s: %s\n", msgs[0].to_string().c_str(), detect.dump(4).c_str());
+        auto j   = json::parse(msgs[1].to_string());
+        auto res = j.get<data::result>();
 
-        // cv::imshow("overlay", rgb);
-        // cv::imwrite("/tmp/overlay.jpg", rgb);
+        // printf("%s: %s\n", msgs[0].to_string().c_str(), j.dump(4).c_str());
+
+        for (const auto& obj : res.objects) {
+            const auto& box = obj.bbox;
+            cv::Rect    rect{box.xmin * width,
+                          box.ymin * height,
+                          (box.xmax - box.ymin) * width,
+                          (box.ymax - box.ymin) * height};
+            cv::rectangle(rgb, rect, cv::Scalar(0, 255, 0));
+        }
+
+        cv::imshow("overlay", rgb);
+        cv::waitKey(1);
     }
 
     return EXIT_SUCCESS;
