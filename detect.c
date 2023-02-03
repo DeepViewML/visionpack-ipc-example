@@ -187,10 +187,26 @@ handle_vsl(void* pub, VAALContext* vaal, VAALBox* boxes, int max_boxes)
      * The following code generates a JSON structure with the inference results.
      * The model and timing information is populated into fields of the root
      * object then an array of detected boxes is populated.
+     *
+     * Note: we have some special handling at the front of the message for the
+     * message queue subscription topic.
      */
+    int topic_len = strlen(topic) + 1;
+
+    if (json.capacity < topic_len) {
+        char* ptr = realloc(json.buffer, topic_len);
+        if (!ptr) {
+            fprintf(stderr, "cannot grow json buffer: out of memory\n");
+            return -1;
+        }
+        json.buffer = ptr;
+    }
+
     char* pos = json.buffer;
-    pos       = json_objOpen_flex(&json.buffer, &json.capacity, pos, NULL);
-    pos       = json_int64_flex(&json.buffer,
+    pos += snprintf(pos, json.capacity, "%s ", topic);
+
+    pos = json_objOpen_flex(&json.buffer, &json.capacity, pos, NULL);
+    pos = json_int64_flex(&json.buffer,
                           &json.capacity,
                           pos,
                           "timestamp",
@@ -264,10 +280,11 @@ handle_vsl(void* pub, VAALContext* vaal, VAALBox* boxes, int max_boxes)
 
     fprintf(stderr, "%.*s\n", json.length, json.buffer);
 
-    err = zmq_send(pub, topic, strlen(topic), ZMQ_SNDMORE);
-    if (err == -1) {
-        fprintf(stderr, "failed to publish topic: %s\n", zmq_strerror(errno));
-    }
+    // err = zmq_send(pub, topic, strlen(topic), ZMQ_SNDMORE);
+    // if (err == -1) {
+    //     fprintf(stderr, "failed to publish topic: %s\n",
+    //     zmq_strerror(errno));
+    // }
 
     err = zmq_send(pub, json.buffer, json.length, 0);
     if (err == -1) {
@@ -289,6 +306,8 @@ main(int argc, char** argv)
     void*        pub;
     VAALBox*     boxes     = NULL;
     int          max_boxes = 50;
+    float        threshold = 0.25f;
+    float        iou       = 0.45f;
     const char*  model     = NULL;
     const char*  engine    = "npu";
     const char*  vslpath   = "/tmp/camera.vsl";
@@ -302,11 +321,13 @@ main(int argc, char** argv)
         {"pub", required_argument, NULL, 'p'},
         {"topic", required_argument, NULL, 't'},
         {"max-boxes", required_argument, NULL, 'm'},
+        {"threshold", required_argument, NULL, 'T'},
+        {"iou", required_argument, NULL, 'I'},
         {NULL},
     };
 
     for (;;) {
-        int opt = getopt_long(argc, argv, "hve:m:s:p:t:", options, NULL);
+        int opt = getopt_long(argc, argv, "hve:m:s:p:t:T:I:", options, NULL);
         if (opt == -1) break;
 
         switch (opt) {
@@ -318,6 +339,10 @@ main(int argc, char** argv)
                    "    display version information\n"
                    "-m MAX --max-boxes MAX\n"
                    "    maximum detection boxes per frame (default: %d)\n"
+                   "-T THRESHOLD, --threshold THRESHOLD\n"
+                   "    set the detection threshold (default: %.2f)\n"
+                   "-I IOU, --iou IOU\n"
+                   "    set the detection iou for nms (default: %.02f)\n"
                    "-e ENGINE, --engine ENGINE\n"
                    "    select the inference engine device [cpu, gpu, npu*]\n"
                    "-s PATH, --vsl PATH\n"
@@ -327,6 +352,8 @@ main(int argc, char** argv)
                    "-t TOPIC --topic TOPIC\n"
                    "    publish events under TOPIC (default: %s)\n",
                    max_boxes,
+                   threshold,
+                   iou,
                    vslpath,
                    puburl,
                    topic);
@@ -371,6 +398,9 @@ main(int argc, char** argv)
         return EXIT_FAILURE;
     }
 
+    vaal_parameter_setf(vaal, "score_threshold", &threshold, 1);
+    vaal_parameter_setf(vaal, "iou_threshold", &iou, 1);
+
     err = vaal_load_model_file(vaal, model);
     if (err) {
         fprintf(stderr, "failed to load %s: %s\n", model, vaal_strerror(err));
@@ -411,6 +441,15 @@ main(int argc, char** argv)
     if (err) {
         fprintf(stderr,
                 "failed to set zeromq option ZMQ_SNDHWM: %s\n",
+                zmq_strerror(errno));
+        return EXIT_FAILURE;
+    }
+
+    int cnf = 1;
+    err     = zmq_setsockopt(pub, ZMQ_CONFLATE, &cnf, sizeof(cnf));
+    if (err) {
+        fprintf(stderr,
+                "failed to set zeromq option ZMQ_CONFLATE: %s\n",
                 zmq_strerror(errno));
         return EXIT_FAILURE;
     }

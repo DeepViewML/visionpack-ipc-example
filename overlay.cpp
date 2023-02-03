@@ -75,7 +75,11 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(result,
 int
 main(int argc, char** argv)
 {
+    const char* topic   = "DETECTION";
     const char* vslpath = "/tmp/camera.vsl";
+
+    int display_width  = 1920;
+    int display_height = 1080;
 
     cv::namedWindow("overlay", cv::WINDOW_NORMAL);
     cv::setWindowProperty("overlay",
@@ -89,7 +93,9 @@ main(int argc, char** argv)
      */
     zmq::context_t ctx;
     zmq::socket_t  sub(ctx, zmq::socket_type::sub);
-    sub.set(zmq::sockopt::subscribe, "DETECTION");
+    sub.set(zmq::sockopt::conflate, 1);
+    sub.set(zmq::sockopt::rcvhwm, 1);
+    sub.set(zmq::sockopt::subscribe, topic);
     sub.connect("ipc:///tmp/detect.pub");
 
     /**
@@ -133,19 +139,12 @@ main(int argc, char** argv)
         auto height = vsl_frame_height(frame);
         auto fourcc = vsl_frame_fourcc(frame);
 
-        printf("frame %dx%d %c%c%c%c\n",
-               width,
-               height,
-               fourcc,
-               fourcc >> 8,
-               fourcc >> 16,
-               fourcc >> 24);
-
         auto    pix = vsl_frame_mmap(frame, NULL);
         cv::Mat yuv(height, width, CV_8UC2, pix);
         cv::Mat rgb(height, width, CV_8UC3);
         cv::cvtColor(yuv, rgb, cv::COLOR_YUV2BGR_YUY2);
 
+        vsl_frame_munmap(frame);
         vsl_frame_unlock(frame);
         vsl_frame_release(frame);
 
@@ -155,28 +154,37 @@ main(int argc, char** argv)
          * sync with our image but within a couple frames and visually correct
          * as long as the objects are not moving too fast.
          */
-        std::vector<zmq::message_t> msgs;
-        auto ret = zmq::recv_multipart(sub, std::back_inserter(msgs));
+        zmq::message_t msg;
+        auto           ret = sub.recv(msg);
         if (!ret) {
             fprintf(stderr, "received empty message\n");
             continue;
         }
 
-        auto j   = json::parse(msgs[1].to_string());
+        size_t      topic_len = strlen(topic);
+        const char* data      = (const char*) msg.data();
+        size_t      size = msg.size();
+
+        if (size < topic_len) { continue; }
+        data += topic_len;
+        size -= topic_len;
+
+        auto j   = json::parse(data, data + size);
         auto res = j.get<data::result>();
 
-        // printf("%s: %s\n", msgs[0].to_string().c_str(), j.dump(4).c_str());
+        cv::Mat img(display_height, display_width, CV_8UC3);
+        cv::resize(rgb, img, cv::Size(display_width, display_height));
 
         for (const auto& obj : res.objects) {
             const auto& box = obj.bbox;
-            cv::Rect    rect{box.xmin * width,
-                          box.ymin * height,
-                          (box.xmax - box.ymin) * width,
-                          (box.ymax - box.ymin) * height};
-            cv::rectangle(rgb, rect, cv::Scalar(0, 255, 0));
+            cv::Rect    rect{box.xmin * display_width,
+                          box.ymin * display_height,
+                          (box.xmax - box.xmin) * display_width,
+                          (box.ymax - box.ymin) * display_height};
+            cv::rectangle(img, rect, cv::Scalar(0, 255, 0));
         }
 
-        cv::imshow("overlay", rgb);
+        cv::imshow("overlay", img);
         cv::waitKey(1);
     }
 
