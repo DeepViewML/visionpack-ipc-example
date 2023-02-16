@@ -26,13 +26,12 @@
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/imgproc.hpp>
 
-extern "C" {
+#include <deepview_rt.h>
+#include <vaal.h>
 #include <videostream.h>
-}
 
 #include "json.hpp"
 #include "zmq.hpp"
-#include "zmq_addon.hpp"
 
 using nlohmann::json;
 
@@ -75,11 +74,12 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(result,
 int
 main(int argc, char** argv)
 {
+    int         err;
     const char* topic   = "DETECTION";
     const char* vslpath = "/tmp/camera.vsl";
 
-    int display_width  = 1920;
-    int display_height = 1080;
+    int display_width  = 1280;
+    int display_height = 720;
 
     cv::namedWindow("overlay", cv::WINDOW_NORMAL);
     cv::setWindowProperty("overlay",
@@ -102,10 +102,6 @@ main(int argc, char** argv)
      * We will receive the camera frames using VideoStream Library then map and
      * convert them to an OpenCV matrix onto which we will draw the bounding
      * boxes and display the results on-screen.
-     *
-     * NOTE: Currently the demo is setup to receive the YUYV frames and handle
-     * conversion using OpenCV.  This is not well-optimized, a future version
-     * of VSL will provide optimized image conversion functions.
      */
     auto vsl = vsl_client_init(vslpath, NULL, false);
     if (!vsl) {
@@ -113,6 +109,28 @@ main(int argc, char** argv)
                 "failed to connect videostream socket %s: %s\n",
                 vslpath,
                 strerror(errno));
+        return EXIT_FAILURE;
+    }
+
+    /**
+     * We will be using VAAL to optimize the conversion of the VSL Frame to the
+     * size and pixel format required for OpenCV.  This uses the same method of
+     * optimized frame loading into a model which VAAL uses but can also be done
+     * without a model by providing a target NNTensor for the operation.
+     */
+    auto vaal = vaal_context_create("cpu");
+    if (!vaal) {
+        fprintf(stderr, "failed to create vaal context\n");
+        return EXIT_FAILURE;
+    }
+
+    auto          image         = nn_tensor_init(nullptr, nullptr);
+    const int32_t image_shape[] = {display_height, display_width, 3};
+    err = nn_tensor_alloc(image, NNTensorType_U8, 3, image_shape);
+    if (err) {
+        fprintf(stderr,
+                "failed to allocate image tensor: %s\n",
+                nn_strerror(NNError(err)));
         return EXIT_FAILURE;
     }
 
@@ -128,25 +146,51 @@ main(int argc, char** argv)
             return EXIT_FAILURE;
         }
 
-        auto err = vsl_frame_trylock(frame);
+        /**
+         * Loads the VSL frame into our image NNTensor which will trigger the
+         * pixel format conversion from YUV to RGB and resize operation to the
+         * image tensor's size.
+         */
+        err = vaal_load_frame_dmabuf(vaal,
+                                     image,
+                                     vsl_frame_handle(frame),
+                                     vsl_frame_fourcc(frame),
+                                     vsl_frame_width(frame),
+                                     vsl_frame_height(frame),
+                                     nullptr,
+                                     0);
+        vsl_frame_release(frame);
+
         if (err) {
-            fprintf(stderr, "failed to lock frame: %s\n", strerror(errno));
-            vsl_frame_release(frame);
+            fprintf(stderr,
+                    "failed to load frame: %s\n",
+                    vaal_strerror(VAALError(err)));
             return EXIT_FAILURE;
         }
 
-        auto width  = vsl_frame_width(frame);
-        auto height = vsl_frame_height(frame);
-        auto fourcc = vsl_frame_fourcc(frame);
+        /**
+         * Maps the tensor to get the raw pixel data which will be used as the
+         * data for our cvimage.  Then we create our display mat and perform
+         * the RGB2BGR conversion required for OpenCV.
+         *
+         * Note: while the conversion here could potentially be skipped you
+         * would still need a memcpy into the display mat as the image tensor
+         * is not stored in cache optimized memory leading to slow draw times
+         * by OpenCV.  If using hardware accelerated graphics such as OpenGL
+         * there are better ways to handle these large image buffers without
+         * costly copy or conversion operations.
+         */
+        auto pix = static_cast<uint8_t*>(nn_tensor_maprw(image));
+        if (!pix) {
+            fprintf(stderr, "failed to map image: no data\n");
+            continue;
+        }
 
-        auto    pix = vsl_frame_mmap(frame, NULL);
-        cv::Mat yuv(height, width, CV_8UC2, pix);
-        cv::Mat rgb(height, width, CV_8UC3);
-        cv::cvtColor(yuv, rgb, cv::COLOR_YUV2BGR_YUY2);
-
-        vsl_frame_munmap(frame);
-        vsl_frame_unlock(frame);
-        vsl_frame_release(frame);
+        cv::Mat cvimage(display_height, display_width, CV_8UC3, pix);
+        cv::Mat display(display_height, display_width, CV_8UC3);
+        cv::cvtColor(cvimage, display, cv::COLOR_RGB2BGR);
+        cvimage.release();
+        nn_tensor_unmap(image);
 
         /**
          * Read the current message from the detection application.  Depending
@@ -163,7 +207,7 @@ main(int argc, char** argv)
 
         size_t      topic_len = strlen(topic);
         const char* data      = (const char*) msg.data();
-        size_t      size = msg.size();
+        size_t      size      = msg.size();
 
         if (size < topic_len) { continue; }
         data += topic_len;
@@ -172,19 +216,19 @@ main(int argc, char** argv)
         auto j   = json::parse(data, data + size);
         auto res = j.get<data::result>();
 
-        cv::Mat img(display_height, display_width, CV_8UC3);
-        cv::resize(rgb, img, cv::Size(display_width, display_height));
-
+        /**
+         * Draws the bounding box rectangles over the image then draw window.
+         */
         for (const auto& obj : res.objects) {
             const auto& box = obj.bbox;
-            cv::Rect    rect{box.xmin * display_width,
-                          box.ymin * display_height,
-                          (box.xmax - box.xmin) * display_width,
-                          (box.ymax - box.ymin) * display_height};
-            cv::rectangle(img, rect, cv::Scalar(0, 255, 0));
+            cv::Rect    rect{int(box.xmin * display_width),
+                          int(box.ymin * display_height),
+                          int((box.xmax - box.xmin) * display_width),
+                          int((box.ymax - box.ymin) * display_height)};
+            cv::rectangle(display, rect, cv::Scalar(0, 255, 0));
         }
 
-        cv::imshow("overlay", img);
+        cv::imshow("overlay", display);
         cv::waitKey(1);
     }
 

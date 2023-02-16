@@ -4,3 +4,4 @@
 detect
 overlay
 .pytest_cache/
+.vscode/
