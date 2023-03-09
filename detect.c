@@ -413,6 +413,14 @@ main(int argc, char** argv)
         return EXIT_FAILURE;
     }
 
+    err = vaal_parameter_seti(vaal, "max_detection", &max_boxes, 1);
+    if (err) {
+        fprintf(stderr,
+                "failed to set context parameter 'max_detection': %s\n",
+                vaal_strerror(err));
+        return EXIT_FAILURE;
+    }
+
     printf("loaded model %s\n", model);
 
     /**
