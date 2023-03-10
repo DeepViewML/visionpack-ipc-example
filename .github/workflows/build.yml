@@ -19,4 +19,4 @@ jobs:
         sudo apt-get update
         sudo apt-get install libvideostream-dev libvaal-dev libzmq3-dev
     - name: make
-      run: make
+      run: make detect
