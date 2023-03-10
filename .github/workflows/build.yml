@@ -17,6 +17,6 @@ jobs:
         curl https://deepviewml.com/apt/key.pub | sudo gpg --dearmor -o /usr/share/keyrings/deepviewml.gpg
         echo 'deb [signed-by=/usr/share/keyrings/deepviewml.gpg] https://deepviewml.com/apt stable main' | sudo tee /etc/apt/sources.list.d/deepviewml.list
         sudo apt-get update
-        sudo apt-get install libvideostream-dev libvaal-dev
+        sudo apt-get install libvideostream-dev libvaal-dev libzmq3-dev
     - name: make
       run: make
