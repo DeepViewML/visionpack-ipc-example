@@ -1,5 +1,7 @@
 # VisionPack IPC Example
 
+[![Build Applications](https://github.com/DeepViewML/visionpack-ipc-example/actions/workflows/build.yml/badge.svg)](https://github.com/DeepViewML/visionpack-ipc-example/actions/workflows/build.yml)
+
 This project demonstrates an inter-process AI solution using VideoStream Library for sharing frames between applications and mixing DeepViewRT AI inferencing using VAAL and traditional vision processing using OpenCV.
 
 This diagram shows the VSL flow from the camera to the AI application (detect), which detects faces and publishes the bounding boxes over a ZeroMQ socket.  The same camera stream is accessed through VSL from the second OpenCV-based application (overlay), which performs a blur operation over the bounding boxes captured through the ZeroMQ socket. The results are shown on-screen.
