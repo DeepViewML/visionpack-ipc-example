@@ -1,0 +1,22 @@
+name: Build Applications
+
+on:
+  push:
+    branches: [ "master" ]
+  pull_request:
+    branches: [ "master" ]
+
+jobs:
+  build:
+
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v3
+    - name: Install VisionPack
+      run: |
+        curl https://deepviewml.com/apt/key.pub | sudo gpg --dearmor -o /usr/share/keyrings/deepviewml.gpg
+        echo 'deb [signed-by=/usr/share/keyrings/deepviewml.gpg] https://deepviewml.com/apt stable main' | sudo tee /etc/apt/sources.list.d/deepviewml.list
+        sudo apt-get update
+        sudo apt-get install libvideostream-dev libvaal-dev
+    - name: make
+      run: make
